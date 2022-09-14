@@ -572,6 +572,8 @@ int realmain(int argc, char *argv[]) {
         gsForMinimize = gs->deepCopy();
     }
 
+    bool shouldIntentionallyLeakMemory = !sorbet::emscripten_build && !sorbet::fuzz_mode;
+
     if (opts.runLSP) {
 #ifdef SORBET_REALMAIN_MIN
         logger->warn("LSP is disabled in sorbet-orig for faster builds");
@@ -769,7 +771,8 @@ int realmain(int argc, char *argv[]) {
             if (!opts.packageRBIGeneration) {
                 // we don't need to typecheck when generating rbis
                 pipeline::typecheck(*gs, move(indexed), opts, *workers, /* cancelable */ false, nullopt,
-                                    /* presorted */ false, /* intentionallyLeakASTs */ !sorbet::emscripten_build);
+                                    /* presorted */ false, /* intentionallyLeakASTs */
+                                    shouldIntentionallyLeakMemory);
             }
             if (gs->hadCriticalError()) {
                 gs->errorQueue->flushAllErrors(*gs);
@@ -956,7 +959,7 @@ int realmain(int argc, char *argv[]) {
 
     opts.flushPrinters();
 
-    if (!sorbet::emscripten_build) {
+    if (shouldIntentionallyLeakMemory) {
         // Let it go: leak memory so that we don't need to call destructors
         // (Although typecheck leaks these, autogen goes thru a different codepath.)
         for (auto &e : indexed) {
