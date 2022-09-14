@@ -810,8 +810,11 @@ private:
     }
 
     void checkLoc(core::Context ctx, core::Loc loc) {
-        auto detailStart = core::Loc::offset2Pos(file.data(ctx), loc.beginPos());
-        auto detailEnd = core::Loc::offset2Pos(file.data(ctx), loc.endPos());
+        if (loc.file() != file) {
+            return;
+        }
+
+        auto [detailStart, detailEnd] = loc.position(ctx);
         ENFORCE(!(detailStart.line >= prohibitedLinesStart && detailEnd.line <= prohibitedLinesEnd));
     }
 

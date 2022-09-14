@@ -17,6 +17,12 @@ example target:
 
 example options:
   --stress-incremental-resolver
+  -fork=\$(nproc)
+  -ignore_crashes=1
+
+to kill, send SIGUSR1 to to the parent fuzz process
+
+TODO(jez) There's a lot of leak log lines... Can we stop those?
 EOF
 exit 1
 fi
