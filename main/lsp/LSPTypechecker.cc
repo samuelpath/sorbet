@@ -32,6 +32,32 @@ namespace sorbet::realmain::lsp {
 using namespace std;
 namespace {
 
+<<<<<<< HEAD
+||||||| parent of dc984d3a3 (Remove `LSPPathType` in favour of `TypecheckingPath`, and use switches instead of ifs if possible)
+TypecheckingPath toTypecheckingPath(PathType pathType) {
+    switch (pathType) {
+        case PathType::Slow:
+            return TypecheckingPath::Slow;
+        case PathType::SlowWithIncrementalResolver:
+            return TypecheckingPath::SlowWithIncrementalResolver;
+        case PathType::Fast:
+            return TypecheckingPath::Fast;
+    }
+}
+
+=======
+TypecheckingPath toTypecheckingPath(TypecheckingPath pathType) {
+    switch (pathType) {
+        case TypecheckingPath::Slow:
+            return TypecheckingPath::Slow;
+        case TypecheckingPath::SlowWithIncrementalResolver:
+            return TypecheckingPath::SlowWithIncrementalResolver;
+        case TypecheckingPath::Fast:
+            return TypecheckingPath::Fast;
+    }
+}
+
+>>>>>>> dc984d3a3 (Remove `LSPPathType` in favour of `TypecheckingPath`, and use switches instead of ifs if possible)
 void sendTypecheckInfo(const LSPConfiguration &config, const core::GlobalState &gs, SorbetTypecheckRunStatus status,
                        TypecheckingPath typecheckingPath, std::vector<core::FileRef> filesTypechecked) {
     if (config.getClientConfig().enableTypecheckInfo) {
@@ -88,10 +114,22 @@ runIncrementalResolver(core::GlobalState &gs, shared_ptr<const LSPConfiguration>
                        vector<core::FileRef> &toTypecheck,
                        UnorderedMap<core::FileRef, core::FoundDefHashes> &oldFoundHashesForFiles,
                        LSPFileUpdates::FastPathFilesToTypecheckResult result) {
+<<<<<<< HEAD
     ENFORCE(updates.typecheckingPath == PathType::Fast ||
             updates.typecheckingPath == PathType::SlowWithIncrementalResolver);
     auto path =
         updates.typecheckingPath == PathType::Fast ? "fast path" : "slow path with incremental namer and resolver";
+||||||| parent of dc984d3a3 (Remove `LSPPathType` in favour of `TypecheckingPath`, and use switches instead of ifs if possible)
+    ENFORCE(updates.typecheckingPath == PathType::Fast ||
+            updates.typecheckingPath == PathType::SlowWithIncrementalResolver);
+    auto path =
+        updates.typecheckingPath == PathType::Fast ? "fast path" : "slow path with incremental namer and resolver";
+=======
+    ENFORCE(updates.typecheckingPath == TypecheckingPath::Fast ||
+            updates.typecheckingPath == TypecheckingPath::SlowWithIncrementalResolver);
+    auto path = updates.typecheckingPath == TypecheckingPath::Fast ? "fast path"
+                                                                   : "slow path with incremental namer and resolver";
+>>>>>>> dc984d3a3 (Remove `LSPPathType` in favour of `TypecheckingPath`, and use switches instead of ifs if possible)
     config->logger->debug("Running {} over num_files={}", path, toTypecheck.size());
     unique_ptr<ShowOperation> op;
     if (toTypecheck.size() > config->opts.lspMaxFilesOnFastPath / 2) {
@@ -451,15 +489,15 @@ bool LSPTypechecker::runSlowPath(LSPFileUpdates updates, WorkerPool &workers, bo
         // Only need to compute FoundDefHashes when running to compute a FileHash
         auto foundHashes = nullptr;
         std::vector<ast::ParsedFile> resolved;
-        ENFORCE(updates.typecheckingPath != PathType::Fast);
+        ENFORCE(updates.typecheckingPath != TypecheckingPath::Fast);
 
-        if (updates.typecheckingPath == PathType::Slow) {
+        if (updates.typecheckingPath == TypecheckingPath::Slow) {
             auto maybeResolved = pipeline::resolve(gs, move(indexedCopies), config->opts, workers, foundHashes);
             if (!maybeResolved.hasResult()) {
                 return;
             }
             resolved = move(maybeResolved.result());
-        } else if (updates.typecheckingPath == PathType::SlowWithIncrementalResolver) {
+        } else if (updates.typecheckingPath == TypecheckingPath::SlowWithIncrementalResolver) {
             resolved = runIncrementalResolver(*gs, config, updates, workers, errorFlusher);
         }
 
@@ -551,8 +589,8 @@ void LSPTypechecker::commitFileUpdates(LSPFileUpdates &updates, bool couldBeCanc
         absl::WriterMutexLock writerLock(&this->cancellationUndoStateRWLock);
         if (couldBeCanceled) {
             ENFORCE(updates.updatedGS.has_value());
-            ENFORCE(updates.typecheckingPath == PathType::Slow ||
-                    updates.typecheckingPath == PathType::SlowWithIncrementalResolver);
+            ENFORCE(updates.typecheckingPath == TypecheckingPath::Slow ||
+                    updates.typecheckingPath == TypecheckingPath::SlowWithIncrementalResolver);
             cancellationUndoState = make_unique<UndoState>(move(gs), std::move(indexedFinalGS), updates.epoch);
         }
 
