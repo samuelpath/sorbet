@@ -54,12 +54,14 @@ vector<ast::ParsedFile> sortParsedFiles(const core::GlobalState &gs, ErrorReport
     return parsedFiles;
 }
 
-pair<vector<ast::ParsedFile>, vector<core::FileRef>>
-runIncrementalResolver(core::GlobalState &gs, shared_ptr<const LSPConfiguration> config, LSPFileUpdates &updates,
-                       WorkerPool &workers, shared_ptr<core::ErrorFlusher> errorFlusher) {
-    ENFORCE(updates.typecheckingPath == TypecheckingPath::Fast ||
-            updates.typecheckingPath == TypecheckingPath::SlowWithIncrementalResolver);
+struct IncrementallyIndexed {
+    vector<core::FileRef> toTypecheck;
+    UnorderedMap<core::FileRef, core::FoundDefHashes> oldFoundHashesForFiles;
+    vector<ast::ParsedFile> updatedIndexed;
+};
 
+IncrementallyIndexed runIncrementalIndex(core::GlobalState &gs, shared_ptr<const LSPConfiguration> config,
+                                         LSPFileUpdates &updates) {
     auto result = updates.fastPathFilesToTypecheck(gs, *config);
 
     config->logger->debug("Added {} files that were not part of the edit to the update set", result.extraFiles.size());
@@ -100,35 +102,21 @@ runIncrementalResolver(core::GlobalState &gs, shared_ptr<const LSPConfiguration>
         if (toTypecheck.size() > config->opts.lspMaxFilesOnFastPath / 2) {
             op = make_unique<ShowOperation>(*config, ShowOperation::Kind::FastPath);
         }
-        ENFORCE(gs.errorQueue->isEmpty());
-        vector<ast::ParsedFile> updatedIndexed;
-        for (auto &f : toTypecheck) {
-            // TODO(jvilk): We don't need to re-index files that didn't change.
-            // (`updates` has already-indexed trees, but they've been indexed with initialGS, not the
-            // `*gs` that we'll be typechecking with. We could do an ast::Substitute here if we had
-            // access to `initialGS`, but that's owned by the indexer thread, not this thread.)
-            auto t = pipeline::indexOne(config->opts, gs, f);
-            updatedIndexed.emplace_back(ast::ParsedFile{t.tree.deepCopy(), t.file});
-            updates.updatedFinalGSFileIndexes.push_back(move(t));
-
-            // See earlier in the method for an explanation of the .empty() check here.
-            if (config->opts.lspExperimentalFastPathEnabled && !result.changedSymbolNameHashes.empty() &&
-                oldFoundHashesForFiles.find(f) == oldFoundHashesForFiles.end()) {
-                // This is an extra file that we need to typecheck which was not part of the original
-                // edited files, so whatever it happens to have in foundMethodHashes is still "old"
-                // (but we can't use `move` to steal it like before, because we're not replacing the
-                // whole file).
-                oldFoundHashesForFiles.emplace(f, f.data(gs).getFileHash()->foundHashes);
-            }
-        }
-        ENFORCE(gs.lspQuery.isEmpty());
-
-        auto committed = config->opts.lspExperimentalFastPathEnabled
-                             ? pipeline::incrementalResolve(gs, move(updatedIndexed), std::move(oldFoundHashesForFiles),
-                                                            config->opts)
-                             : pipeline::incrementalResolve(gs, move(updatedIndexed), nullopt, config->opts);
-        return make_pair(move(committed), toTypecheck);
     }
+    ENFORCE(gs.lspQuery.isEmpty());
+    return IncrementallyIndexed{toTypecheck, oldFoundHashesForFiles, move(updatedIndexed)};
+}
+
+vector<ast::ParsedFile>
+runIncrementalResolver(core::GlobalState &gs, vector<ast::ParsedFile> &updatedIndexed,
+                       shared_ptr<const LSPConfiguration> config,
+                       UnorderedMap<core::FileRef, core::FoundDefHashes> oldFoundHashesForFiles) {
+    auto committed =
+        config->opts.lspExperimentalFastPathEnabled
+            ? pipeline::incrementalResolve(gs, move(updatedIndexed), std::move(oldFoundHashesForFiles), config->opts)
+            : pipeline::incrementalResolve(gs, move(updatedIndexed), nullopt, config->opts);
+    return committed;
+}
 } // namespace
 
 LSPTypechecker::LSPTypechecker(std::shared_ptr<const LSPConfiguration> config,
@@ -288,14 +276,15 @@ vector<core::FileRef> LSPTypechecker::runFastPath(LSPFileUpdates &updates, Worke
     Timer timeit(config->logger, "fast_path");
     // Replace error queue with one that is owned by this thread.
     gs->errorQueue = make_shared<core::ErrorQueue>(gs->errorQueue->logger, gs->errorQueue->tracer, errorFlusher);
-    auto [resolved, toTypecheck] = runIncrementalResolver(*gs, config, updates, workers, errorFlusher);
+    auto indexed = runIncrementalIndex(*gs, config, updates);
+    auto resolved = runIncrementalResolver(*gs, indexed.updatedIndexed, config, indexed.oldFoundHashesForFiles);
     auto sorted = sortParsedFiles(*gs, *errorReporter, move(resolved));
     const auto presorted = true;
     const auto cancelable = false;
     pipeline::typecheck(*gs, move(sorted), config->opts, workers, cancelable, std::nullopt, presorted);
     gs->lspTypecheckCount++;
 
-    return toTypecheck;
+    return indexed.toTypecheck;
 }
 
 namespace {
@@ -403,19 +392,33 @@ bool LSPTypechecker::runSlowPath(LSPFileUpdates updates, WorkerPool &workers, bo
     const bool committed = epochManager.tryCommitEpoch(*finalGS, epoch, cancelable, preemptManager, [&]() -> void {
         UnorderedSet<int> updatedFiles;
         vector<ast::ParsedFile> indexedCopies;
+        IncrementallyIndexed indexed;
 
-        // Index the updated files using finalGS.
-        {
-            auto &gs = *finalGS;
-            core::UnfreezeFileTable fileTableAccess(gs);
-            for (auto &file : updates.updatedFiles) {
-                auto parsedFile = updateFile(gs, file, config->opts);
-                if (parsedFile.tree) {
-                    indexedCopies.emplace_back(ast::ParsedFile{parsedFile.tree.deepCopy(), parsedFile.file});
-                    updatedFiles.insert(parsedFile.file.id());
-                }
-                updates.updatedFinalGSFileIndexes.push_back(move(parsedFile));
+        switch (updates.typecheckingPath) {
+            case TypecheckingPath::SlowWithIncrementalResolver: {
+                indexed = runIncrementalIndex(*finalGS, config, updates);
+                break;
             }
+            case TypecheckingPath::Slow: {
+                // Index the updated files using finalGS.
+                {
+                    auto &gs = *finalGS;
+                    core::UnfreezeFileTable fileTableAccess(gs);
+                    for (auto &file : updates.updatedFiles) {
+                        auto parsedFile = updateFile(gs, file, config->opts);
+                        if (parsedFile.tree) {
+                            indexedCopies.emplace_back(ast::ParsedFile{parsedFile.tree.deepCopy(), parsedFile.file});
+                            updatedFiles.insert(parsedFile.file.id());
+                        }
+                        updates.updatedFinalGSFileIndexes.push_back(move(parsedFile));
+                    }
+                }
+
+                break;
+            }
+            case TypecheckingPath::Fast:
+                ENFORCE(false);
+                break;
         }
 
         // Before making preemption or cancelation possible, pre-commit the changes from this slow path so that
@@ -429,7 +432,6 @@ bool LSPTypechecker::runSlowPath(LSPFileUpdates updates, WorkerPool &workers, bo
             // Canceled.
             return;
         }
-
         ENFORCE(gs->lspQuery.isEmpty());
 
         // Test-only hook: Stall for as long as `slowPathBlocked` is set.
@@ -463,8 +465,7 @@ bool LSPTypechecker::runSlowPath(LSPFileUpdates updates, WorkerPool &workers, bo
                 break;
             };
             case TypecheckingPath::SlowWithIncrementalResolver: {
-                auto [incrementallyResolved, _] = runIncrementalResolver(*gs, config, updates, workers, errorFlusher);
-                resolved = move(incrementallyResolved);
+                resolved = runIncrementalResolver(*gs, indexed.updatedIndexed, config, indexed.oldFoundHashesForFiles);
                 break;
             };
             case TypecheckingPath::Fast: {
