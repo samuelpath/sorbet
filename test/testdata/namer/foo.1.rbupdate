@@ -1,0 +1,5 @@
+# typed: true
+# assert-fast-path: foo.rb
+
+X = 1
+X::Y = 1
