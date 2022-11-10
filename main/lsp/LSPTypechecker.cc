@@ -32,20 +32,11 @@ namespace sorbet::realmain::lsp {
 using namespace std;
 namespace {
 
-TypecheckingPath toTypecheckingPath(PathType pathType) {
-    switch (pathType) {
-        case PathType::Slow:
-            return TypecheckingPath::Slow;
-        case PathType::Fast:
-            return TypecheckingPath::Fast;
-    }
-}
-
 void sendTypecheckInfo(const LSPConfiguration &config, const core::GlobalState &gs, SorbetTypecheckRunStatus status,
-                       PathType typecheckingPath, std::vector<core::FileRef> filesTypechecked) {
+                       TypecheckingPath typecheckingPath, std::vector<core::FileRef> filesTypechecked) {
     if (config.getClientConfig().enableTypecheckInfo) {
-        auto sorbetTypecheckInfo = make_unique<SorbetTypecheckRunInfo>(status, toTypecheckingPath(typecheckingPath),
-                                                                       config.frefsToPaths(gs, filesTypechecked));
+        auto sorbetTypecheckInfo =
+            make_unique<SorbetTypecheckRunInfo>(status, typecheckingPath, config.frefsToPaths(gs, filesTypechecked));
         config.output->write(make_unique<LSPMessage>(
             make_unique<NotificationMessage>("2.0", LSPMethod::SorbetTypecheckRunInfo, move(sorbetTypecheckInfo))));
     }
@@ -113,7 +104,7 @@ void LSPTypechecker::initialize(TaskQueue &queue, std::unique_ptr<core::GlobalSt
         ENFORCE_NO_TIMER(indexed.size() == initialGS->filesUsed());
 
         updates.epoch = 0;
-        updates.typecheckingPath = PathType::Slow;
+        updates.typecheckingPath = TypecheckingPath::Slow;
         updates.updatedFileIndexes = move(indexed);
         updates.updatedGS = initialGS->deepCopy();
 
@@ -183,7 +174,7 @@ bool LSPTypechecker::typecheck(LSPFileUpdates updates, WorkerPool &workers,
 
     vector<core::FileRef> filesTypechecked;
     bool committed = true;
-    const bool isFastPath = updates.typecheckingPath == PathType::Fast;
+    const bool isFastPath = updates.typecheckingPath == TypecheckingPath::Fast;
     sendTypecheckInfo(*config, *gs, SorbetTypecheckRunStatus::Started, updates.typecheckingPath, {});
     {
         ErrorEpoch epoch(*errorReporter, updates.epoch, isFastPath, move(diagnosticLatencyTimers));
@@ -215,7 +206,7 @@ vector<core::FileRef> LSPTypechecker::runFastPath(LSPFileUpdates &updates, Worke
     ENFORCE(!updates.cancellationExpected);
     ENFORCE(updates.preemptionsExpected == 0);
     // This path only works for fast path updates.
-    ENFORCE(updates.typecheckingPath == PathType::Fast);
+    ENFORCE(updates.typecheckingPath == TypecheckingPath::Fast);
 
     Timer timeit(config->logger, "fast_path");
     // Replace error queue with one that is owned by this thread.
@@ -356,7 +347,7 @@ bool LSPTypechecker::runSlowPath(LSPFileUpdates updates, WorkerPool &workers, bo
     auto &logger = config->logger;
     unique_ptr<ShowOperation> slowPathOp = make_unique<ShowOperation>(*config, ShowOperation::Kind::SlowPathBlocking);
     Timer timeit(logger, "slow_path");
-    ENFORCE(updates.typecheckingPath != PathType::Fast || config->disableFastPath);
+    ENFORCE(updates.typecheckingPath != TypecheckingPath::Fast || config->disableFastPath);
     ENFORCE(updates.updatedGS.has_value());
     if (!updates.updatedGS.has_value()) {
         Exception::raise("runSlowPath called with an update that lacks an updated global state.");
@@ -510,7 +501,7 @@ bool LSPTypechecker::runSlowPath(LSPFileUpdates updates, WorkerPool &workers, bo
 
 void LSPTypechecker::commitFileUpdates(LSPFileUpdates &updates, bool couldBeCanceled) {
     // The fast path cannot be canceled.
-    ENFORCE(!(updates.typecheckingPath == PathType::Fast && couldBeCanceled));
+    ENFORCE(!(updates.typecheckingPath == TypecheckingPath::Fast && couldBeCanceled));
     {
         absl::WriterMutexLock writerLock(&this->cancellationUndoStateRWLock);
         if (couldBeCanceled) {
@@ -519,7 +510,7 @@ void LSPTypechecker::commitFileUpdates(LSPFileUpdates &updates, bool couldBeCanc
         }
 
         // Clear out state associated with old finalGS.
-        if (updates.typecheckingPath != PathType::Fast) {
+        if (updates.typecheckingPath != TypecheckingPath::Fast) {
             indexedFinalGS.clear();
         }
 
@@ -544,10 +535,10 @@ void LSPTypechecker::commitFileUpdates(LSPFileUpdates &updates, bool couldBeCanc
     }
 
     if (updates.updatedGS.has_value()) {
-        ENFORCE(updates.typecheckingPath != PathType::Fast);
+        ENFORCE(updates.typecheckingPath != TypecheckingPath::Fast);
         gs = move(updates.updatedGS.value());
     } else {
-        ENFORCE(updates.typecheckingPath == PathType::Fast);
+        ENFORCE(updates.typecheckingPath == TypecheckingPath::Fast);
     }
 }
 
@@ -608,7 +599,7 @@ LSPQueryResult LSPTypechecker::query(const core::lsp::Query &q, const std::vecto
 
 LSPFileUpdates LSPTypechecker::getNoopUpdate(std::vector<core::FileRef> frefs) const {
     LSPFileUpdates noop;
-    noop.typecheckingPath = PathType::Fast;
+    noop.typecheckingPath = TypecheckingPath::Fast;
     // Epoch isn't important for this update.
     noop.epoch = 0;
     for (auto fref : frefs) {
@@ -707,7 +698,7 @@ void LSPTypecheckerDelegate::resumeTaskQueue(InitializedTask &task) {
 
 void LSPTypecheckerDelegate::typecheckOnFastPath(LSPFileUpdates updates,
                                                  vector<unique_ptr<Timer>> diagnosticLatencyTimers) {
-    if (updates.typecheckingPath != PathType::Fast) {
+    if (updates.typecheckingPath != TypecheckingPath::Fast) {
         Exception::raise("Tried to typecheck a slow path edit on the fast path.");
     }
     auto committed = typechecker.typecheck(move(updates), workers, move(diagnosticLatencyTimers));
