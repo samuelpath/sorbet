@@ -3997,6 +3997,7 @@ void sanityCheck(const core::GlobalState &gs, vector<ast::ParsedFile> &trees) {
         ResolveSanityCheckWalk sanity;
         for (auto &tree : trees) {
             core::Context ctx(gs, core::Symbols::root(), tree.file);
+            ENFORCE(tree.tree);
             ast::TreeWalk::apply(ctx, sanity, tree.tree);
         }
     }
