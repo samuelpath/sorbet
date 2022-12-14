@@ -26,14 +26,14 @@ steps:
 
   - label: ":mac: test-static-sanitized.sh (master only)"
     command: .buildkite/test-static-sanitized.sh
-    branches: "master"
+    # branches: "master"
     artifact_paths: _out_/profile.json
     agents:
       os: mac
     # TODO(jez) We should only retry for specific error.
     # The one we were trying to fix was `'foo.h': file not found`
-    retry:
-     automatic: true
+    # retry:
+    #  automatic: true
 
   - label: ":linux: test-static-sanitized.sh"
     command: .buildkite/test-static-sanitized.sh
@@ -64,14 +64,14 @@ steps:
 
   - label: ":mac: build-static-release.sh (master only)"
     command: .buildkite/build-static-release.sh
-    branches: master
+    # branches: master
     artifact_paths: _out_/**/*
     agents:
       os: mac
     # TODO(jez) We should only retry for specific error.
     # The one we were trying to fix was `'foo.h': file not found`
-    retry:
-     automatic: true
+    # retry:
+    #  automatic: true
 
   - label: ":linux: build-static-release.sh"
     command: .buildkite/build-static-release.sh
